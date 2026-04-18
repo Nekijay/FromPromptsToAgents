@@ -117,46 +117,50 @@ SMART_BUDGET_FOOD_AGENT_SYSTEM_PROMPT = """\
 You are the Smart Budget Food Agent — an expert culinary analyst who balances \
 nutrition and cost for families on a budget.
 
-Your job is to recommend the BEST dish that:
-1. Fits within the user's budget (total cost for all people)
-2. Maximises nutrition (protein and key vitamins)
-3. Respects any dietary restrictions (vegetarian, vegan, gluten-free)
-4. Is practically cookable by a robot
+You operate in two modes:
 
-ALWAYS follow this reasoning process:
-Step 1: Call fit_budget(budget_gbp, people, dietary_filter) to see all affordable options.
-Step 2: For the top candidates, call get_nutrition(dish_name) to compare protein and vitamins.
-Step 3: Call get_price(dish_name, servings=people) to get the exact cost and shopping list.
-Step 4: Call analyse_dish(dish_name) to understand the cooking process.
-Step 5: Call get_cooking_techniques(dish_name) for robotic feasibility details.
-Step 6: Explain your choice — WHY this dish best balances budget and nutrition.
+MODE A — USER SPECIFIED A DISH:
+The user has chosen a specific dish. Your job is to:
+1. Try to look it up with analyse_dish(dish_name) and get_cooking_techniques(dish_name).
+2. If not found in the database, use your own culinary knowledge about that dish.
+3. Estimate the cost for the number of people and check if it fits the budget.
+4. Estimate protein, calories, and key vitamins from your knowledge.
+5. Explain whether it fits the budget and any trade-offs.
 
-After reasoning, produce a STRUCTURED TASK SPECIFICATION with these sections:
+MODE B — AI RECOMMENDS A DISH:
+No dish was specified. Your job is to:
+1. Call fit_budget(budget_gbp, people, dietary_filter) to see all affordable options.
+2. Call get_nutrition(dish_name) on the top candidates to compare protein and vitamins.
+3. Call get_price(dish_name, servings=people) for exact cost and shopping list.
+4. Call analyse_dish(dish_name) and get_cooking_techniques(dish_name) for cooking details.
+5. Choose the best dish and explain WHY it best balances budget and nutrition.
+
+In BOTH modes, produce a STRUCTURED TASK SPECIFICATION with these sections:
 
 ## Chosen Dish and Reasoning
-- Dish name and why it was selected
-- Budget analysis: total cost vs. budget, cost per person
-- Nutrition justification: protein, calories, key vitamins
-- Trade-off explanation (what you prioritised and why)
+- Dish name and why it was selected (or why the user's choice fits/doesn't fit)
+- Budget analysis: estimated total cost vs. budget, cost per person
+- Nutrition justification: protein (g), calories (kcal), key vitamins
+- Trade-off explanation
 
 ## Shopping List
-List every ingredient with quantity and estimated cost.
-Show the total cost and remaining budget.
+Every ingredient with quantity and estimated UK supermarket cost.
+Total cost and remaining budget.
 
 ## Nutritional Summary
-- Protein per serving, calories per serving, key vitamins
-- How this meets the nutritional targets
+Protein per serving, calories per serving, key vitamins, dietary flags.
 
 ## Cooking Task Specification (for Robotics Agent)
-A precise specification for the Robotics Design Agent:
+A precise robotics specification:
 - All physical manipulation tasks (cutting, stirring, pouring, heating)
-- Temperatures and durations for each step
-- Equipment needed
+- Temperatures (°C) and durations (minutes) for each step
+- Equipment needed and how the robot interacts with it
 - Critical precision requirements
 - Safety constraints
 
-Be specific about forces (Newtons), temperatures (°C), durations (minutes), \
-and precision tolerances. The Robotics Agent depends entirely on your analysis.
+Be specific about temperatures (°C), durations (minutes), and forces where known. \
+The Robotics Agent depends entirely on your analysis. If a dish is not in the \
+database, use your culinary knowledge — do NOT refuse, just estimate confidently.
 """
 
 
@@ -164,26 +168,42 @@ async def run_smart_budget_agent(
     budget_gbp: float,
     people: int,
     dietary_filter: str,
-    extra_request: str,
+    dish_request: str = "",
+    extra_request: str = "",
     status_callback=None,
 ) -> str:
     """
     Run Agent 1: Smart Budget Food Agent.
 
-    Selects the best dish for the budget/people/dietary constraints,
-    then produces a full task specification for the Robotics Agent.
+    If dish_request is provided, analyses that specific dish (even if not in
+    the database — the agent falls back to its own culinary knowledge).
+    Otherwise, uses fit_budget to recommend the best dish for the budget.
     """
     server_script = str(SERVER_DIR / "recipe_mcp_server.py")
 
-    user_message = (
-        f"Budget: £{budget_gbp:.2f} total for {people} people.\n"
-        f"Dietary filter: {dietary_filter}.\n"
-        f"Additional request: {extra_request if extra_request else 'none'}.\n\n"
-        f"Use fit_budget to find the best dish, verify nutrition with get_nutrition, "
-        f"get the shopping list with get_price, then analyse the dish fully. "
-        f"Explain the budget vs. nutrition trade-off and produce a complete task "
-        f"specification for the Robotics Design Agent."
-    )
+    if dish_request:
+        user_message = (
+            f"The user wants to cook: '{dish_request}'.\n"
+            f"Budget: £{budget_gbp:.2f} total for {people} people "
+            f"(£{budget_gbp/people:.2f} per person).\n"
+            f"Dietary filter: {dietary_filter}.\n"
+            f"Extra notes: {extra_request if extra_request else 'none'}.\n\n"
+            f"MODE A: Try to look up '{dish_request}' using analyse_dish and "
+            f"get_cooking_techniques. If it is not in the database, use your "
+            f"culinary knowledge to estimate costs, nutrition, and cooking steps. "
+            f"Check whether it fits the budget, explain any trade-offs, then produce "
+            f"a complete task specification for the Robotics Design Agent."
+        )
+    else:
+        user_message = (
+            f"Budget: £{budget_gbp:.2f} total for {people} people.\n"
+            f"Dietary filter: {dietary_filter}.\n"
+            f"Extra notes: {extra_request if extra_request else 'none'}.\n\n"
+            f"MODE B: Use fit_budget to find the best dish, verify nutrition with "
+            f"get_nutrition, get the shopping list with get_price, then analyse the "
+            f"dish fully. Explain the budget vs. nutrition trade-off and produce a "
+            f"complete task specification for the Robotics Design Agent."
+        )
 
     return await run_agent_with_mcp(
         server_script=server_script,
@@ -271,33 +291,47 @@ async def run_robotic_chef_pipeline(
     budget_gbp: float,
     people: int,
     dietary_filter: str = "none",
+    dish_request: str = "",
     extra_request: str = "",
     status_callback=None,
 ) -> dict:
     """
     Full Smart Budget RobotChef pipeline.
 
-    1. Looks up the best dish (Python-side, for structured metrics)
-    2. Runs Agent 1 to analyse the dish and reason about budget/nutrition
-    3. Runs Agent 2 to design the robot
-    4. Returns structured result with metrics + agent outputs
+    If dish_request is provided, analyses that dish (even custom ones not in
+    the database). Otherwise, uses fit_budget to find the best dish.
 
     Returns dict with:
-        food_analysis    — Agent 1's full text output
-        robot_design     — Agent 2's full text output
-        dish_name        — Selected dish name
-        total_cost_gbp   — Total cost for all people
-        protein_g        — Protein per serving (g)
-        calories_kcal    — Calories per serving (kcal)
-        shopping_list    — List of {item, qty, cost_gbp}
+        food_analysis  — Agent 1's full text output
+        robot_design   — Agent 2's full text output
+        dish_name      — Dish name (from DB lookup or the user's request)
+        total_cost_gbp — Estimated total cost for all people
+        protein_g      — Protein per serving (g)
+        calories_kcal  — Calories per serving (kcal)
+        shopping_list  — List of {item, qty, cost_gbp} (empty for custom dishes)
     """
 
     def _status(msg: str):
         if status_callback:
             status_callback(msg)
 
-    # Pre-compute best dish for structured metrics in the UI
-    best = find_best_dish(budget_gbp, people, dietary_filter)
+    # For structured metrics: try DB lookup if no custom dish specified
+    if dish_request:
+        # Try to find it in DB for metrics; if not found metrics come from agent text
+        from recipe_mcp_server import _find_dish
+        _, matched = _find_dish(dish_request)
+        if matched:
+            best = {
+                "name": matched["name"],
+                "total_cost_gbp": round(matched["price_per_serving_gbp"] * people, 2),
+                "protein_g_per_serving": matched["protein_g_per_serving"],
+                "calories_kcal_per_serving": matched["calories_kcal_per_serving"],
+                "shopping_list": matched.get("shopping_list", []),
+            }
+        else:
+            best = None  # custom dish — metrics shown as "see analysis"
+    else:
+        best = find_best_dish(budget_gbp, people, dietary_filter)
 
     # Stage 1: Smart Budget Food Agent
     _status("=== Stage 1: Smart Budget Food Agent ===")
@@ -305,6 +339,7 @@ async def run_robotic_chef_pipeline(
         budget_gbp=budget_gbp,
         people=people,
         dietary_filter=dietary_filter,
+        dish_request=dish_request,
         extra_request=extra_request,
         status_callback=status_callback,
     )
@@ -321,10 +356,10 @@ async def run_robotic_chef_pipeline(
     return {
         "food_analysis": food_analysis,
         "robot_design": robot_design,
-        "dish_name": best["name"] if best else "Unknown",
-        "total_cost_gbp": best["total_cost_gbp"] if best else 0.0,
-        "protein_g": best["protein_g_per_serving"] if best else 0,
-        "calories_kcal": best["calories_kcal_per_serving"] if best else 0,
+        "dish_name": best["name"] if best else (dish_request or "Unknown"),
+        "total_cost_gbp": best["total_cost_gbp"] if best else None,
+        "protein_g": best["protein_g_per_serving"] if best else None,
+        "calories_kcal": best["calories_kcal_per_serving"] if best else None,
         "shopping_list": best["shopping_list"] if best else [],
     }
 
@@ -340,27 +375,31 @@ async def _main():
     parser.add_argument("--budget", type=float, default=15.0, help="Budget in GBP")
     parser.add_argument("--people", type=int, default=2, help="Number of people")
     parser.add_argument("--diet", default="none", help="none / vegetarian / vegan / gluten-free")
-    parser.add_argument("--request", default="", help="Extra request")
+    parser.add_argument("--dish", default="", help="Specific dish to cook (optional)")
+    parser.add_argument("--request", default="", help="Extra notes")
     args = parser.parse_args()
 
     def print_status(msg: str):
         print(f"  [{msg}]")
 
-    print(f"\nSmart Budget RobotChef — £{args.budget} for {args.people} people ({args.diet})")
+    dish_label = f"'{args.dish}'" if args.dish else "AI recommendation"
+    print(f"\nSmart Budget RobotChef — £{args.budget} for {args.people} people | dish: {dish_label}")
     print("=" * 60)
 
     result = await run_robotic_chef_pipeline(
         budget_gbp=args.budget,
         people=args.people,
         dietary_filter=args.diet,
+        dish_request=args.dish,
         extra_request=args.request,
         status_callback=print_status,
     )
 
-    print(f"\nSelected dish: {result['dish_name']}")
-    print(f"Total cost:    £{result['total_cost_gbp']:.2f}")
-    print(f"Protein:       {result['protein_g']}g/serving")
-    print(f"Calories:      {result['calories_kcal']} kcal/serving")
+    print(f"\nDish:       {result['dish_name']}")
+    cost = result["total_cost_gbp"]
+    print(f"Total cost: £{cost:.2f}" if cost is not None else "Total cost: see analysis")
+    print(f"Protein:    {result['protein_g']}g/serving" if result["protein_g"] else "Protein: see analysis")
+    print(f"Calories:   {result['calories_kcal']} kcal" if result["calories_kcal"] else "Calories: see analysis")
 
     print("\n" + "=" * 60)
     print("FOOD ANALYSIS (Agent 1)")

@@ -38,6 +38,12 @@ st.caption("Agent-to-Agent AI System — University of Hertfordshire Workshop 20
 with st.sidebar:
     st.header("Meal Parameters")
 
+    dish_request = st.text_input(
+        "Dish to cook (optional)",
+        placeholder="e.g. Jollof rice and chicken, pasta carbonara...",
+        help="Leave blank and the AI will pick the best dish for your budget.",
+    )
+
     budget = st.slider(
         "Budget (£)",
         min_value=5,
@@ -63,9 +69,9 @@ with st.sidebar:
 
     st.divider()
     extra = st.text_area(
-        "Extra Request (optional)",
+        "Extra notes (optional)",
         placeholder="e.g. high protein, quick to cook, kid-friendly...",
-        height=80,
+        height=70,
     )
 
     st.divider()
@@ -79,13 +85,16 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 
 prompt_parts = [f"£{budget} budget", f"{people} people"]
+if dish_request:
+    prompt_parts.insert(0, f"Dish: {dish_request}")
 if dietary != "none":
     prompt_parts.append(dietary)
 if extra:
     prompt_parts.append(extra)
-prompt_preview = ", ".join(prompt_parts) + ". Plan a balanced meal and design a robot to cook it."
+mode = "Custom dish" if dish_request else "AI picks best dish for budget"
+prompt_preview = ", ".join(prompt_parts) + ". Design a robot to cook it."
 
-st.info(f"**Prompt:** {prompt_preview}")
+st.info(f"**Mode:** {mode}  \n**Prompt:** {prompt_preview}")
 
 col_run, col_info = st.columns([1, 3])
 with col_run:
@@ -110,6 +119,7 @@ if run_button:
                     budget_gbp=float(budget),
                     people=int(people),
                     dietary_filter=dietary,
+                    dish_request=dish_request.strip(),
                     extra_request=extra,
                     status_callback=update_status,
                 )
@@ -121,14 +131,15 @@ if run_button:
             st.stop()
 
     # ---- Metrics row ----
-    st.subheader(f"Selected Dish: {result['dish_name']}")
+    st.subheader(f"Dish: {result['dish_name']}")
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Cost", f"£{result['total_cost_gbp']:.2f}", f"Budget: £{budget}")
-    m2.metric("Protein / serving", f"{result['protein_g']}g")
-    m3.metric("Calories / serving", f"{result['calories_kcal']} kcal")
-    budget_remaining = budget - result["total_cost_gbp"]
-    m4.metric("Budget remaining", f"£{budget_remaining:.2f}")
+    cost = result["total_cost_gbp"]
+    m1.metric("Total Cost", f"£{cost:.2f}" if cost is not None else "See analysis", f"Budget: £{budget}")
+    m2.metric("Protein / serving", f"{result['protein_g']}g" if result["protein_g"] else "See analysis")
+    m3.metric("Calories / serving", f"{result['calories_kcal']} kcal" if result["calories_kcal"] else "See analysis")
+    budget_remaining = budget - cost if cost is not None else None
+    m4.metric("Budget remaining", f"£{budget_remaining:.2f}" if budget_remaining is not None else "—")
 
     # ---- Shopping list ----
     if result["shopping_list"]:
