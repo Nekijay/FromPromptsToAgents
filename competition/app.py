@@ -157,12 +157,8 @@ if run_button:
     st.divider()
 
     # ---- Agent outputs ----
-    col_a1, col_a2 = st.columns(2)
-
-    with col_a1:
-        with st.expander("Agent 1 — Food Analysis & Budget Reasoning", expanded=True):
-            st.markdown(result["food_analysis"])
-
-    with col_a2:
-        with st.expander("Agent 2 — Robot Design", expanded=True):
-            st.markdown(result["robot_design"])
+    tab1, tab2 = st.tabs(["Agent 1 — Food Analysis & Budget Reasoning", "Agent 2 — Robot Design"])
+    with tab1:
+        st.markdown(result["food_analysis"])
+    with tab2:
+        st.markdown(result["robot_design"])
